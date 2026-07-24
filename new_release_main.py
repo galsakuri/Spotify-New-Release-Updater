@@ -31,8 +31,10 @@ def main():
                 "playlist-read-private user-follow-read"
             ),
             open_browser=False,
-            cache_path=os.path.expanduser(
-                "~/.cache/spotify_release_token.json"),
+            cache_path=os.environ.get(
+                "SPOTIFY_TOKEN_CACHE_PATH",
+                os.path.expanduser("~/.cache/spotify_release_token.json"),
+            ),
         )
     )
     me = sp.current_user()
