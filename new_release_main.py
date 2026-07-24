@@ -58,8 +58,7 @@ def main():
     # * Use timezone-aware current time for UTC
     one_week_ago = datetime.now(timezone.utc) - timedelta(days=3)
     # * List of keywords to exclude from new releases
-    exclude_keywords = ["remix", "Remix", "instrumental",
-                        "Instrumental", "mix", "Mix", "Live", "live", "version", "Version"]
+    exclude_keywords = ["remix", "instrumental", "mix", "live", "version"]
     # 3.1) Collect new tracks with their release dates
     new_tracks = []  # list of dicts: {"uri": ..., "date": datetime}
 
