@@ -20,8 +20,9 @@ def remove_in_batches(sp, playlist_id, uris, batch_size=100):
 
 
 def main():
-    # Load .env
-    load_dotenv("/home/galilo2311/Spotify_Playlist_web_scraping/.env")
+    # Load .env, if present (no-op on platforms like GitHub Actions that
+    # inject env vars directly)
+    load_dotenv()
 
     # Spotipy reads SPOTIPY_* variables automatically:
     sp = spotipy.Spotify(
@@ -62,37 +63,53 @@ def main():
     # 3.1) Collect new tracks with their release dates
     new_tracks = []  # list of dicts: {"uri": ..., "date": datetime}
 
+    # Cap how many pages of albums/singles we'll pull per artist so one
+    # prolific catalog can't blow up the run's API-call budget, while still
+    # covering artists whose recent release isn't sorted into the first page.
+    MAX_ALBUM_PAGES = 4  # up to 200 albums/singles per artist
+
     for artist_id in artist_ids:
-        albums = sp.artist_albums(
-            artist_id, album_type="album,single", limit=50)
-        for alb in albums["items"]:
-            rd = alb.get("release_date")
-            precision = alb.get("release_date_precision")
-            if precision == "day":
-                rd_dt = datetime.strptime(
-                    rd, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            elif precision == "month":
-                rd_dt = datetime.strptime(
-                    rd, "%Y-%m").replace(tzinfo=timezone.utc)
-            else:
-                rd_dt = datetime.strptime(
-                    rd, "%Y").replace(tzinfo=timezone.utc)
-            if rd_dt >= one_week_ago:
-                tracks = sp.album_tracks(alb["id"])["items"]
-                for t in tracks:
-                    # ── NEW: ignore tracks shorter than one minute ──────────────────────
-                    if t["duration_ms"] is not None and t["duration_ms"] < MIN_DURATION_MS:
-                        continue
+        try:
+            results = sp.artist_albums(
+                artist_id, album_type="album,single", limit=50)
+            albums_items = list(results["items"])
+            pages = 1
+            while results.get("next") and pages < MAX_ALBUM_PAGES:
+                results = sp.next(results)
+                albums_items.extend(results["items"])
+                pages += 1
 
-                    track_name = t["name"]
-                    # Skip tracks containing any of the exclude keywords
-                    if any(keyword in track_name.lower() for keyword in exclude_keywords):
-                        continue
+            for alb in albums_items:
+                rd = alb.get("release_date")
+                precision = alb.get("release_date_precision")
+                if precision == "day":
+                    rd_dt = datetime.strptime(
+                        rd, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                elif precision == "month":
+                    rd_dt = datetime.strptime(
+                        rd, "%Y-%m").replace(tzinfo=timezone.utc)
+                else:
+                    rd_dt = datetime.strptime(
+                        rd, "%Y").replace(tzinfo=timezone.utc)
+                if rd_dt >= one_week_ago:
+                    tracks = sp.album_tracks(alb["id"])["items"]
+                    for t in tracks:
+                        # ── NEW: ignore tracks shorter than one minute ──────────────────────
+                        if t["duration_ms"] is not None and t["duration_ms"] < MIN_DURATION_MS:
+                            continue
 
-                    new_tracks.append({
-                        "uri":  t["uri"],
-                        "date": rd_dt
-                    })
+                        track_name = t["name"]
+                        # Skip tracks containing any of the exclude keywords
+                        if any(keyword in track_name.lower() for keyword in exclude_keywords):
+                            continue
+
+                        new_tracks.append({
+                            "uri":  t["uri"],
+                            "date": rd_dt
+                        })
+        except Exception as e:
+            print(f"Warning: skipping artist {artist_id} due to error: {e}")
+            continue
 
     # 4) Remove duplicate URIs, keeping only the most recent release per track
     track_map = {}
@@ -117,7 +134,12 @@ def main():
 
     # 6) Automatically select (or create) the "New Releases" playlist
     playlist_name_target = "New Releases"
-    playlists = sp.current_user_playlists(limit=50)["items"]
+    playlists = []
+    results = sp.current_user_playlists(limit=50)
+    playlists.extend(results["items"])
+    while results.get("next"):
+        results = sp.next(results)
+        playlists.extend(results["items"])
     # Try to find existing playlist by name (case-insensitive)
     playlist = next(
         (p for p in playlists if p["name"].strip(
