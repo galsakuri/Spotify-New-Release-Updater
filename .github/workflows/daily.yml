@@ -28,13 +28,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # Runs on every event, including workflow_dispatch, so a manual run is a
+      # live test of the lookup below. Only schedule events actually skip.
       - name: Skip if a scheduled run already succeeded today
         id: guard
-        if: github.event_name == 'schedule'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           today=$(date -u +%F)
+          # Fail open: if the lookup breaks, run the script rather than lose the
+          # day. Re-running is harmless — it filters out URIs already present.
           prior=$(gh run list \
             --repo "$GITHUB_REPOSITORY" \
             --workflow daily.yml \
@@ -42,12 +45,23 @@ jobs:
             --status success \
             --limit 20 \
             --json createdAt \
-            --jq "[.[] | select(.createdAt | startswith(\"$today\"))] | length")
-          if [ "$prior" -gt 0 ]; then
-            echo "Already succeeded $prior time(s) today ($today) — skipping."
+            --jq "[.[] | select(.createdAt | startswith(\"$today\"))] | length" 2>&1) || {
+              echo "Guard lookup failed, running anyway: $prior"
+              prior=0
+            }
+          case "$prior" in
+            ''|*[!0-9]*) echo "Unexpected guard output '$prior', running anyway."; prior=0 ;;
+          esac
+
+          echo "$prior successful scheduled run(s) so far today ($today)."
+          if [ "$GITHUB_EVENT_NAME" != "schedule" ]; then
+            echo "Manual run — never skips."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          elif [ "$prior" -gt 0 ]; then
+            echo "Today's work is already done — skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
-            echo "No successful scheduled run yet today ($today) — proceeding."
+            echo "Nothing succeeded yet today — proceeding."
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
