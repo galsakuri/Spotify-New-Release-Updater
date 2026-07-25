@@ -1,34 +1,103 @@
 name: Daily New Releases
 
 on:
+  # GitHub's scheduler is best-effort and runs on UTC only. Israel is UTC+2 in
+  # winter / UTC+3 in summer, so 00:00–01:00 UTC is the only band that lands
+  # inside 02:00–04:00 local all year. Four attempts are spread across it on
+  # off-round minutes (the top of every hour is the worst queue spike); the
+  # first one that succeeds makes the rest no-ops.
   schedule:
-    - cron: '0 1 * * *'
+    - cron: '7 0 * * *'   # 03:07 IDT / 02:07 IST
+    - cron: '21 0 * * *'  # 03:21 IDT / 02:21 IST
+    - cron: '37 0 * * *'  # 03:37 IDT / 02:37 IST
+    - cron: '53 0 * * *'  # 03:53 IDT / 02:53 IST
   workflow_dispatch:
+
+# Queue overlapping attempts instead of running them side by side, so a slow
+# run can't race a later one into adding the same tracks twice.
+concurrency:
+  group: daily-new-releases
+  cancel-in-progress: false
+
+permissions:
+  contents: write # for the keepalive commit in the last step
+  actions: read # for the "already succeeded today" lookup below
 
 jobs:
   update-playlist:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
+      - name: Skip if a scheduled run already succeeded today
+        id: guard
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          today=$(date -u +%F)
+          prior=$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow daily.yml \
+            --event schedule \
+            --status success \
+            --limit 20 \
+            --json createdAt \
+            --jq "[.[] | select(.createdAt | startswith(\"$today\"))] | length")
+          if [ "$prior" -gt 0 ]; then
+            echo "Already succeeded $prior time(s) today ($today) — skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No successful scheduled run yet today ($today) — proceeding."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout
+        if: steps.guard.outputs.skip != 'true'
         uses: actions/checkout@v4
+        with:
+          # Full history: pushing the keepalive commit from a shallow clone can
+          # be rejected with "shallow update not allowed".
+          fetch-depth: 0
 
       - name: Set up Python
+        if: steps.guard.outputs.skip != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: pip
 
       - name: Install dependencies
+        if: steps.guard.outputs.skip != 'true'
         run: pip install -r requirements.txt
 
       - name: Write token cache
+        if: steps.guard.outputs.skip != 'true'
         env:
           SPOTIFY_TOKEN_CACHE: ${{ secrets.SPOTIFY_TOKEN_CACHE }}
         run: echo "$SPOTIFY_TOKEN_CACHE" > "$RUNNER_TEMP/spotify_token_cache.json"
 
       - name: Run script
+        if: steps.guard.outputs.skip != 'true'
         env:
           SPOTIPY_CLIENT_ID: ${{ secrets.SPOTIPY_CLIENT_ID }}
           SPOTIPY_CLIENT_SECRET: ${{ secrets.SPOTIPY_CLIENT_SECRET }}
           SPOTIPY_REDIRECT_URI: ${{ secrets.SPOTIPY_REDIRECT_URI }}
           SPOTIFY_TOKEN_CACHE_PATH: ${{ runner.temp }}/spotify_token_cache.json
         run: python new_release_main.py
+
+      # Runs even if the script above failed: the 60-day inactivity clock counts
+      # commits, not workflow runs, so a broken script would otherwise take the
+      # schedule down with it.
+      - name: Keepalive (schedules auto-disable after 60 idle days)
+        if: ${{ !cancelled() && steps.guard.outputs.skip != 'true' }}
+        run: |
+          age=$(( ( $(date +%s) - $(git log -1 --format=%ct) ) / 86400 ))
+          if [ "$age" -ge 50 ]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit --allow-empty -m "chore: keepalive"
+            git push
+            echo "Last commit was ${age}d ago — pushed an empty keepalive commit."
+          else
+            echo "Last commit ${age}d ago — no keepalive needed."
+          fi
