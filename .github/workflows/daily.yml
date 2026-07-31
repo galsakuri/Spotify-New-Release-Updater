@@ -2,15 +2,18 @@ name: Daily New Releases
 
 on:
   # GitHub's scheduler is best-effort and runs on UTC only. Israel is UTC+2 in
-  # winter / UTC+3 in summer, so 00:00–01:00 UTC is the only band that lands
-  # inside 02:00–04:00 local all year. Four attempts are spread across it on
-  # off-round minutes (the top of every hour is the worst queue spike); the
-  # first one that succeeds makes the rest no-ops.
+  # winter / UTC+3 in summer, so 00:00–01:00 UTC is the band that lands inside
+  # 02:00–04:00 local all year — but 00:00 UTC is also the most oversubscribed
+  # minute on all of Actions (it's everyone's default "midnight" cron), and in
+  # practice runs here have landed ~3h late, around 03:00–04:00 UTC instead of
+  # 00:00–01:00. These entries are pulled back ~3h, to 21:00–22:00 UTC the
+  # prior day, so the delayed actual fire time lands back in the intended
+  # window. Off-round minutes avoid the worst queue spikes; the first attempt
+  # that succeeds makes the rest no-ops.
   schedule:
-    - cron: '7 0 * * *'   # 03:07 IDT / 02:07 IST
-    - cron: '21 0 * * *'  # 03:21 IDT / 02:21 IST
-    - cron: '37 0 * * *'  # 03:37 IDT / 02:37 IST
-    - cron: '53 0 * * *'  # 03:53 IDT / 02:53 IST
+    - cron: '7 21 * * *'   # targets ~00:07 UTC actual / 02:07 IST / 03:07 IDT
+    - cron: '21 21 * * *'  # targets ~00:21 UTC actual / 02:21 IST / 03:21 IDT
+    - cron: '37 21 * * *'  # targets ~00:37 UTC actual / 02:37 IST / 03:37 IDT
   workflow_dispatch:
 
 # Queue overlapping attempts instead of running them side by side, so a slow
